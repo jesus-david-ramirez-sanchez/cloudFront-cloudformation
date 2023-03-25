@@ -1,0 +1,29 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  ProjectName:
+    Type: String
+  EnvType:
+    Type: String
+
+Resources:
+  OperatorsGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Join ["-", [!Ref ProjectName, !Ref EnvType, operators]]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchEventsReadOnlyAccess
+
+  OperatorUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Join ["-", [!Ref ProjectName, !Ref EnvType]]
+      Groups:
+        - !Ref OperatorsGroup
+
+Outputs:
+  OperatorsGroup:
+    Value: !Ref OperatorsGroup
+    Export:
+      Name: !Join ["-", [!Ref ProjectName, !Ref EnvType, operators]]

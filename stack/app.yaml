@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  ProjectName:
+    Type: String
+  EnvType:
+    Type: String
+  Domain:
+    Type: String
+  OperatorsGroup:
+    Type: String
+  SSLCertificate:
+    Type: String
+  DomainApp:
+    Type: String
+
+Resources:
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DomainApp
+      PublicAccessBlockConfiguration: 
+        BlockPublicAcls: false
+        IgnorePublicAcls: false
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration: 
+        IndexDocument: index.html
+        ErrorDocument: index.html
+
+
+  SyncWebsiteBucketPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join ["-", [!Ref ProjectName, bucket, sync]]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - s3:GetObject*
+              - s3:PutObject*
+              - s3:DeleteObject*
+            Resource:
+              - !Join ["", ["arn:aws:s3:::", !Ref WebsiteBucket, "/*"]]
+          - Effect: "Allow"
+            Action:
+              - s3:ListBucket*
+              - s3:GetBucket*
+            Resource:
+              - !Join ["", ["arn:aws:s3:::", !Ref WebsiteBucket]]
+      Groups:
+        - !Ref OperatorsGroup
+
+
+  OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Join [" ", ["CloudFront OAI for", !Ref WebsiteBucket]]
+
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Principal:
+              CanonicalUser: !GetAtt OriginAccessIdentity.S3CanonicalUserId
+            Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Join ["", ["arn:aws:s3:::", !Ref WebsiteBucket, "/*"]]
+
+
+  InvalidationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join ["-", [!Ref ProjectName, create, invalidation]]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - cloudfront:CreateInvalidation
+            Resource:
+              - !Join ["", ["arn:aws:cloudfront::", !Ref "AWS::AccountId", ":distribution/", !Ref TheCloudFrontDistribution]]
+      Groups:
+        - !Ref OperatorsGroup
+
+         ###################### LAMBDA EDGE - HEADERS FRONT ######################
+  LambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+                - 'edgelambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - LambdaRole
+    Properties:
+      PolicyName: AWSLambdaEdgeExecutionRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:PutLogEvents
+              - logs:CreateLogStream
+              - logs:CreateLogGroup
+            Resource: arn:aws:logs:*:*:*
+      Roles:
+        - !Ref 'LambdaRole'
+
+  CloudfrontFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - LambdaRole
+    Properties:
+      Description: Funcion lambda que modifica las cabeceras de seguridad
+      Code:
+        ZipFile: !Sub |
+         'use strict';
+          exports.handler = (event, context, callback) => {
+              //Get contents of response
+              const response = event.Records[0].cf.response;
+              const headers = response.headers;
+              //Set new headers
+              //new value header Access-Control-Allow-Origin
+              // headers['strict-transport-security'] = [{ key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubdomains; preload' }];
+              // headers['x-content-type-options'] = [{ key: 'X-Content-Type-Options', value: 'nosniff' }];
+              // headers['x-xss-protection'] = [{ key: 'X-XSS-Protection', value: '1; mode=block' }];
+              // headers['referrer-policy'] = [{ key: 'Referrer-Policy', value: 'same-origin' }];
+              headers['access-control-allow-origin'] = [{ key: 'Access-Control-Allow-Origin', value: 'https://app.${Domain}' }];
+              // headers['x-permitted-cross-domain-policies'] = [{ key: 'X-Permitted-Cross-Domain-Policies', value: 'master-only' }];
+              headers['cache-control'] = [{ key: 'Cache-Control', value: 'no-cache; must-revalidate; pre-check= 0; post-check= 0; max-age= 0; s-maxage= 0; no-store' }];
+              headers['pragma'] = [{ key: 'Pragma', value: 'no-cache' }];
+              // headers['x-frame-options'] = [{ key: 'X-Frame-Options', value: 'DENY' }];
+              // headers['expires'] = [{ key: 'Expires', value: '0' }];
+              // headers['server'] = [{ key: 'Server', value: 'mipaquete-mpr' }];
+              //Return modified response
+              callback(null, response);
+          };
+      FunctionName:
+        Fn::Sub: headers-${ProjectName}-${EnvType}
+      Handler: index.handler
+      MemorySize: 128
+      Role:
+        Fn::GetAtt: LambdaRole.Arn
+      Runtime: nodejs14.x
+      Timeout: 3
+
+  # Lambda headers - Version
+  VersionedLambdaFunction:
+    Type: 'AWS::Lambda::Version'
+    Properties:
+      FunctionName:
+        Ref: CloudfrontFunction
+
+
+  TheCloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment:
+          Fn::Sub: 'CloudFront OAI for ${Domain}'
+
+  ###################### CLOUDFRONT ######################
+  ## Con Certificado Generado 
+  TheCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName:
+              Fn::Join: ['', [Ref: WebsiteBucket, '.s3.amazonaws.com']]
+            Id: the-s3-bucket
+            S3OriginConfig:
+              OriginAccessIdentity:
+                Fn::Join: ['', ['origin-access-identity/cloudfront/', Ref: TheCloudFrontOriginAccessIdentity]]
+        Enabled: true
+        HttpVersion: http2
+        DefaultRootObject: index.html
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 300
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        # Aliases:
+        #   Condition: CreateProdResources
+        #     - !Ref WebsiteBucket
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - DELETE
+            - GET
+            - HEAD
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: the-s3-bucket
+          ViewerProtocolPolicy: redirect-to-https
+          LambdaFunctionAssociations:
+            - EventType: 'origin-response'
+              LambdaFunctionARN:
+                Ref: VersionedLambdaFunction
+
+        PriceClass: PriceClass_100
+
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SSLCertificate
+          MinimumProtocolVersion: TLSv1.2_2018
+          SslSupportMethod: sni-only
+
+
+Outputs:
+  DistributionId:
+    Value: !Ref TheCloudFrontDistribution
+  WebsiteURL:
+    Value: !Join ["", ["https://", !GetAtt TheCloudFrontDistribution.DomainName]]
+

@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  ProjectName:
+    Type: String
+  SSLCertificate:
+    Type: String
+  Domain:
+    Type: String
+  DomainApp:
+    Type: String
+  EnvType:
+    Type: String
+
+Resources:
+  iam:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvType: !Ref EnvType
+      TemplateURL: stack/iam.yaml
+
+  app:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Domain: !Ref Domain
+        DomainApp: !Ref DomainApp
+        OperatorsGroup: !GetAtt iam.Outputs.OperatorsGroup
+        SSLCertificate: !Ref SSLCertificate
+        EnvType: !Ref EnvType
+      TemplateURL: stack/app.yaml
+
+Outputs:
+  WebsiteURL:
+    Value: !GetAtt app.Outputs.WebsiteURL
+  WebsiteDistributionId:
+    Value: !GetAtt app.Outputs.DistributionId
